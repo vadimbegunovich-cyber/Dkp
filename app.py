@@ -9,11 +9,19 @@ import io
 st.set_page_config(page_title="Автоматизация ДКП и Актов", page_icon="🚗", layout="wide")
 
 st.title("🚗 Автоматизация заполнения ДКП и Актов")
-st.caption("Финальная версия с распознаванием документов")
+st.caption("Финальная версия с автоматическим распознаванием")
 
 # --- БОКОВАЯ ПАНЕЛЬ ---
 st.sidebar.header("⚙️ Настройки и Загрузка")
-api_key = st.sidebar.text_input("API-ключ Gemini", type="password", help="Вставьте ваш ключ Google Gemini")
+
+# Проверяем, сохранен ли ключ в Secrets (настройках Streamlit)
+saved_key = st.secrets.get("GEMINI_API_KEY", "")
+
+if saved_key:
+    api_key = saved_key
+    st.sidebar.success("🔑 API-ключ подключен из Secrets")
+else:
+    api_key = st.sidebar.text_input("API-ключ Gemini", type="password", help="Вставьте ваш ключ Google Gemini")
 
 uploaded_files = st.sidebar.file_uploader(
     "Загрузите фото документов (Паспорт, СТС, ПТС)",
@@ -42,7 +50,7 @@ if "form_data" not in st.session_state:
 # --- КНОПКА РАСПОЗНАВАНИЯ ---
 if st.sidebar.button("🤖 Распознать фото", type="primary"):
     if not api_key:
-        st.sidebar.error("Сначала введите API-ключ Gemini!")
+        st.sidebar.error("Укажите API-ключ!")
     elif not uploaded_files:
         st.sidebar.warning("Загрузите хотя бы одно фото документа.")
     else:
