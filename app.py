@@ -1,7 +1,7 @@
 import streamlit as st
 import docx
 from docx import Document
-import google.generativeai as genai
+from google import genai
 from PIL import Image
 import json
 import io
@@ -9,14 +9,11 @@ import io
 st.set_page_config(page_title="Автоматизация ДКП и Актов", page_icon="🚗", layout="wide")
 
 st.title("🚗 Автоматизация заполнения ДКП и Актов")
-st.caption("Финальная версия с распознаванием документов через Gemini")
+st.caption("Финальная версия с распознаванием документов")
 
-# --- БОКОВАЯ ПАНЕЛЬ: НАСТРОЙКИ И ЗАГРУЗКА ФОТО ---
+# --- БОКОВАЯ ПАНЕЛЬ ---
 st.sidebar.header("⚙️ Настройки и Загрузка")
 api_key = st.sidebar.text_input("API-ключ Gemini", type="password", help="Вставьте ваш ключ Google Gemini")
-
-if api_key:
-    genai.configure(api_key=api_key)
 
 uploaded_files = st.sidebar.file_uploader(
     "Загрузите фото документов (Паспорт, СТС, ПТС)",
@@ -24,7 +21,7 @@ uploaded_files = st.sidebar.file_uploader(
     accept_multiple_files=True
 )
 
-# --- ИНИЦИАЛИЗАЦИЯ ДАННЫХ В ПАМЯТИ ---
+# --- ИНИЦИАЛИЗАЦИЯ ДАННЫХ ---
 if "form_data" not in st.session_state:
     st.session_state.form_data = {
         "seller_fio": "",
@@ -42,7 +39,7 @@ if "form_data" not in st.session_state:
         "price_str": ""
     }
 
-# --- КНОПКА РАСПОЗНАВАНИЯ С МУЛЬТИМОДАЛЬНЫМ GEMINI ---
+# --- КНОПКА РАСПОЗНАВАНИЯ ---
 if st.sidebar.button("🤖 Распознать фото", type="primary"):
     if not api_key:
         st.sidebar.error("Сначала введите API-ключ Gemini!")
@@ -51,12 +48,12 @@ if st.sidebar.button("🤖 Распознать фото", type="primary"):
     else:
         with st.spinner("Анализируем документы..."):
             try:
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                client = genai.Client(api_key=api_key)
                 images = [Image.open(f) for f in uploaded_files]
                 
                 prompt = """
                 Найди и извлеки из представленных фото документов (Паспорт РФ, СТС, ПТС) следующие данные.
-                Верни ответ СТРОГО в формате JSON без кавычек markdown (без ```json):
+                Верни ответ СТРОГО в формате JSON без разметки markdown:
                 {
                   "seller_fio": "ФИО владельца/продавца",
                   "seller_passport": "Серия, номер, кем и когда выдан, код подразделения",
@@ -68,10 +65,14 @@ if st.sidebar.button("🤖 Распознать фото", type="primary"):
                   "car_sts": "Серия и номер СТС",
                   "car_number": "Гос. регистрационный знак"
                 }
-                Если поле не найдено на фото, оставь пустой строкой "".
+                Если поле не найдено, оставь пустой строкой "".
                 """
                 
-                response = model.generate_content([prompt, *images])
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=[prompt, *images]
+                )
+                
                 cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
                 extracted_data = json.loads(cleaned_text)
                 
@@ -83,7 +84,7 @@ if st.sidebar.button("🤖 Распознать фото", type="primary"):
             except Exception as e:
                 st.sidebar.error(f"Ошибка при обработке: {e}")
 
-# --- ФОРМА ВВОДА И РЕДАКТИРОВАНИЯ ДАННЫХ ---
+# --- ФОРМА ВВОДА ---
 st.subheader("📋 Данные для ДКП и Акта")
 tab1, tab2, tab3 = st.tabs(["👤 Участники", "🚘 Автомобиль", "💰 Финансы"])
 
@@ -117,12 +118,11 @@ with tab3:
     with col2:
         st.session_state.form_data["price_str"] = st.text_input("Стоимость (прописью)", st.session_state.form_data["price_str"])
 
-# --- СБОРКА WORD Документа ---
+# --- СБОРКА WORD ---
 st.divider()
 if st.button("📄 Сформировать полный комплект (ДКП + Акт)", type="primary", use_container_width=True):
     doc = Document()
     
-    # Заголовок
     h = doc.add_heading('ДОГОВОР КУПЛИ-ПРОДАЖИ ТРАНСПОРТНОГО СРЕДСТВА', level=1)
     h.alignment = docx.enum.text.WD_ALIGN_PARAGRAPH.CENTER
     
@@ -147,7 +147,6 @@ if st.button("📄 Сформировать полный комплект (ДК�
     
     doc.add_page_break()
     
-    # Акт приема-передачи
     h2 = doc.add_heading('АКТ ПРИЕМА-ПЕРЕДАЧИ ТРАНСПОРТНОГО СРЕДСТВА', level=1)
     h2.alignment = docx.enum.text.WD_ALIGN_PARAGRAPH.CENTER
     
