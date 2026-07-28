@@ -1,35 +1,29 @@
 import streamlit as st
 import docx
 from docx import Document
-from docx.shared import Pt, Cm
+from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import io
-import requests
-import re
+import json
+from google import genai
 from PIL import Image
 import datetime
 
 st.set_page_config(page_title="Автоматизация ДКП и Актов", page_icon="🚗", layout="wide")
 
-st.title("🚗 Генератор ДКП и Актов (по шаблонам Авто-К)")
-st.caption("Финальная версия с исправленным скачиванием и точными шаблонами документов")
+st.title("🚗 Генератор ДКП и Актов (AI-версия)")
+st.caption("Умное распознавание документов через нейросеть Gemini")
 
-# --- БОКОВАЯ ПАНЕЛЬ: ЗАГРУЗКА И OCR ---
-st.sidebar.header("📁 Загрузка документов")
+# --- БОКОВАЯ ПАНЕЛЬ: ЗАГРУЗКА И AI ---
+st.sidebar.header("⚙️ Настройки и загрузка")
+
+api_key = st.sidebar.text_input("🔑 Вставьте API-ключ Gemini", type="password", help="Начинается на AIzaSy...")
 
 uploaded_files = st.sidebar.file_uploader(
     "Фото (Паспорт, СТС, ПТС)",
     type=["jpg", "jpeg", "png"],
     accept_multiple_files=True
 )
-
-def prepare_image(file_bytes):
-    """Сжимаем фото, чтобы бесплатный OCR не выдавал таймаут"""
-    img = Image.open(io.BytesIO(file_bytes))
-    img.thumbnail((1500, 1500))
-    buffer = io.BytesIO()
-    img.convert("RGB").save(buffer, format="JPEG", quality=75)
-    return buffer.getvalue()
 
 # --- ИНИЦИАЛИЗАЦИЯ ДАННЫХ ---
 today_str = datetime.datetime.now().strftime("%d.%m.%Y")
@@ -69,77 +63,65 @@ if "form_data" not in st.session_state:
         "car_defects": "диагностика прилагается",
         "price_num": "1 801 000",
         "price_text": "Один миллион восемьсот одна тысяча рублей 00 копеек",
-        "payment_details": "денежные средства перечислить в качестве частичной оплаты приобретаемого Продавцом нового автомобиля..."
+        "payment_details": "денежные средства перечислить в качестве частичной оплаты приобретаемого Продавцом нового автомобиля"
     }
 
 # --- КНОПКА СКАНИРОВАНИЯ ---
-if st.sidebar.button("🤖 Распознать фото", type="primary"):
-    if not uploaded_files:
-        st.sidebar.warning("Загрузите фото для распознавания.")
+if st.sidebar.button("🤖 Умное распознавание", type="primary"):
+    if not api_key.startswith("AIzaSy"):
+        st.sidebar.error("⚠️ Введите правильный API-ключ (начинается на AIzaSy...)")
+    elif not uploaded_files:
+        st.sidebar.warning("⚠️ Загрузите фото документов.")
     else:
-        with st.spinner("Сжимаем и отправляем на открытый API OCR..."):
-            full_text = ""
-            for file in uploaded_files:
-                try:
-                    compressed_bytes = prepare_image(file.getvalue())
-                    response = requests.post(
-                        "https://api.ocr.space/parse/image",
-                        files={"filename": (file.name, compressed_bytes, "image/jpeg")},
-                        data={
-                            "apikey": "K87889882388957",
-                            "language": "rus",
-                            "isOverlayRequired": False,
-                            "scale": True,
-                            "OCREngine": "2"
-                        },
-                        timeout=40
-                    )
-                    res_json = response.json()
-                    if res_json.get("IsErroredOnProcessing"):
-                        st.sidebar.error(f"Ошибка API: {res_json.get('ErrorMessage')}")
-                    else:
-                        for parsed in res_json.get("ParsedResults", []):
-                            full_text += "\n" + parsed.get("ParsedText", "")
-                except Exception as e:
-                    st.sidebar.error(f"Сбой сети: {e}")
-
-            if full_text.strip():
-                st.sidebar.success("Текст распознан! Извлекаем данные...")
-                full_text_upper = full_text.upper()
+        with st.spinner("Нейросеть читает документы... (занимает 5-15 сек)"):
+            try:
+                client = genai.Client(api_key=api_key.strip())
+                images = [Image.open(f) for f in uploaded_files]
                 
-                vin_match = re.search(r'\b[A-HJ-NPR-Z0-9]{17}\b', full_text_upper)
-                if vin_match:
-                    st.session_state.form_data["car_vin"] = vin_match.group(0)
-                    st.session_state.form_data["car_body"] = vin_match.group(0)
-
-                number_match = re.search(r'[А-ЯA-Z]\s*\d{3}\s*[А-ЯA-Z]{2}\s*\d{2,3}', full_text_upper)
-                if number_match:
-                    st.session_state.form_data["car_number"] = number_match.group(0).replace(" ", "")
-
-                year_match = re.search(r'\b(19|20)\d{2}\b', full_text)
-                if year_match:
-                    st.session_state.form_data["car_year"] = year_match.group(0)
-
-                passport_match = re.search(r'\b\d{2}\s*\d{2}\s*\d{6}\b', full_text)
-                if passport_match:
-                    st.session_state.form_data["seller_passport"] = passport_match.group(0)
-
-                docs_match = re.findall(r'\b\d{2}\s*[А-ЯA-Z0-9]{2}\s*\d{6}\b', full_text_upper)
-                if len(docs_match) > 0:
-                    st.session_state.form_data["car_sts"] = docs_match[0]
-                if len(docs_match) > 1:
-                    st.session_state.form_data["car_pts"] = docs_match[1]
-
-                with st.sidebar.expander("🔍 Посмотреть сырой текст"):
-                    st.text(full_text)
+                prompt = """
+                Твоя задача — извлечь данные из предоставленных фото (паспорт, СТС, ПТС) и вернуть их СТРОГО в формате JSON без разметки markdown.
+                Структура JSON:
+                {
+                  "seller_fio": "Фамилия Имя Отчество (если есть в паспорте)",
+                  "seller_passport": "Серия и номер, кем выдан, дата выдачи, код подразделения (собери все в одну строку)",
+                  "seller_address": "Адрес регистрации (прописка) полностью",
+                  "car_mark": "Марка и модель авто",
+                  "car_vin": "VIN номер авто (17 символов)",
+                  "car_year": "Год выпуска",
+                  "car_pts": "Серия и номер ПТС",
+                  "car_sts": "Серия и номер СТС",
+                  "car_number": "Государственный регистрационный знак авто",
+                  "car_color": "Цвет авто",
+                  "car_engine": "Модель и номер двигателя (если есть)"
+                }
+                Если какого-то поля на фото нет, оставь пустую строку "".
+                """
+                
+                response = client.models.generate_content(
+                    model='gemini-2.0-flash',
+                    contents=[prompt, *images]
+                )
+                
+                cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
+                extracted_data = json.loads(cleaned_text)
+                
+                for key, val in extracted_data.items():
+                    if key in st.session_state.form_data and val:
+                        st.session_state.form_data[key] = str(val)
+                
+                # Копируем VIN в кузов
+                if st.session_state.form_data.get("car_vin"):
+                     st.session_state.form_data["car_body"] = st.session_state.form_data["car_vin"]
+                        
+                st.sidebar.success("✅ Все данные успешно извлечены!")
                 st.rerun()
-            else:
-                st.sidebar.error("Текст не найден. Попробуйте фото лучшего качества.")
+            except Exception as e:
+                st.sidebar.error(f"❌ Ошибка: {e}")
 
 # --- ИНТЕРФЕЙС ВВОДА ДАННЫХ ---
 d = st.session_state.form_data
 
-st.subheader("📋 Редактор данных")
+st.subheader("📋 Данные для ДКП и Акта")
 tab_deal, tab_seller, tab_buyer, tab_car = st.tabs(["📄 Договор и Сумма", "👤 Продавец", "🏢 Покупатель", "🚘 Автомобиль"])
 
 with tab_deal:
@@ -151,11 +133,11 @@ with tab_deal:
     c4, c5 = st.columns([1, 2])
     d["price_num"] = c4.text_input("Сумма (цифрами)", d["price_num"])
     d["price_text"] = c5.text_input("Сумма (прописью)", d["price_text"])
-    d["payment_details"] = st.text_area("Особые условия оплаты (п. 2.2)", d["payment_details"], height=100)
+    d["payment_details"] = st.text_area("Особые условия оплаты (п. 2.2)", d["payment_details"], height=80)
 
 with tab_seller:
     d["seller_fio"] = st.text_input("ФИО Продавца", d["seller_fio"])
-    d["seller_passport"] = st.text_input("Паспорт (серия, номер, кем/когда выдан)", d["seller_passport"])
+    d["seller_passport"] = st.text_area("Паспорт (серия, номер, кем/когда выдан)", d["seller_passport"], height=100)
     d["seller_address"] = st.text_input("Адрес регистрации", d["seller_address"])
     d["seller_phone"] = st.text_input("Телефон Продавца", d["seller_phone"])
 
@@ -196,6 +178,7 @@ with tab_car:
     d["car_body"] = c10.text_input("№ Кузова", d["car_body"])
     d["car_frame"] = c11.text_input("№ Рамы (Шасси)", d["car_frame"])
     d["car_defects"] = st.text_input("Дефекты (недостатки)", d["car_defects"])
+
 
 # --- ФУНКЦИЯ ГЕНЕРАЦИИ WORD ---
 def create_word_doc(data):
