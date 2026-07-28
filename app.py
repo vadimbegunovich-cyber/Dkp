@@ -2,12 +2,24 @@ import streamlit as st
 import docx
 from docx import Document
 import io
+import requests
+import re
 
 st.set_page_config(page_title="Автоматизация ДКП и Актов", page_icon="🚗", layout="wide")
 
 st.title("🚗 Автоматизация заполнения ДКП и Актов")
-st.caption("Автономная версия")
+st.caption("Автоматическое сканирование документов через открытый OCR")
 
+# --- БОКОВАЯ ПАНЕЛЬ ДЛЯ ЗАГРУЗКИ И СКАНИРОВАНИЯ ---
+st.sidebar.header("📁 Загрузка документов")
+
+uploaded_files = st.sidebar.file_uploader(
+    "Загрузите фото документов (Паспорт, СТС, ПТС)",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True
+)
+
+# --- ИНИЦИАЛИЗАЦИЯ ДАННЫХ В ПАМЯТИ ---
 if "form_data" not in st.session_state:
     st.session_state.form_data = {
         "seller_fio": "",
@@ -25,6 +37,57 @@ if "form_data" not in st.session_state:
         "price_str": ""
     }
 
+# --- КНОПКА АВТОМАТИЧЕСКОГО СКАНИРОВАНИЯ ---
+if st.sidebar.button("🤖 Распознать фото", type="primary"):
+    if not uploaded_files:
+        st.sidebar.warning("Сначала загрузите хотя бы одно фото документа.")
+    else:
+        with st.spinner("Сканируем документы..."):
+            full_text = ""
+            for file in uploaded_files:
+                try:
+                    # Вызов открытого бесплатного OCR API
+                    response = requests.post(
+                        "https://api.ocr.space/parse/image",
+                        files={"filename": (file.name, file.getvalue(), file.type)},
+                        data={"apikey": "helloworld", "language": "rus", "isOverlayRequired": False},
+                        timeout=30
+                    )
+                    result = response.json()
+                    if result.get("ParsedResults"):
+                        for parsed in result["ParsedResults"]:
+                            full_text += "\n" + parsed.get("ParsedText", "")
+                except Exception as e:
+                    st.sidebar.error(f"Ошибка при чтении {file.name}: {e}")
+
+            if full_text:
+                st.sidebar.success("Текст успешного извлечен!")
+                
+                # --- УМНЫЙ ПОИСК ДАННЫХ В ТЕКСТЕ ---
+                
+                # Поиск VIN (17 символов)
+                vin_match = re.search(r'\b[A-HJ-NPR-Z0-9]{17}\b', full_text.upper())
+                if vin_match:
+                    st.session_state.form_data["car_vin"] = vin_match.group(0)
+
+                # Поиск Гос. номера (РФ)
+                number_match = re.search(r'[А-ЯA-Z]\s*\d{3}\s*[А-ЯA-Z]{2}\s*\d{2,3}', full_text.upper())
+                if number_match:
+                    st.session_state.form_data["car_number"] = number_match.group(0).replace(" ", "")
+
+                # Поиск Года выпуска (4 цифры)
+                year_match = re.search(r'\b(19\d{2}|20[0-2]\d)\b', full_text)
+                if year_match:
+                    st.session_state.form_data["car_year"] = year_match.group(0)
+
+                # Поиск паспорта (10 цифр)
+                passport_match = re.search(r'\b\d{2}\s*\d{2}\s*\d{6}\b', full_text)
+                if passport_match:
+                    st.session_state.form_data["seller_passport"] = passport_match.group(0)
+
+                st.rerun()
+
+# --- ФОРМА ВВОДА И РЕДАКТИРОВАНИЯ ---
 st.subheader("📋 Данные для ДКП и Акта")
 tab1, tab2, tab3 = st.tabs(["👤 Участники", "🚘 Автомобиль", "💰 Финансы"])
 
@@ -58,8 +121,8 @@ with tab3:
     with col2:
         st.session_state.form_data["price_str"] = st.text_input("Стоимость (прописью)", st.session_state.form_data["price_str"])
 
+# --- СБОРКА WORD ---
 st.divider()
-
 if st.button("📄 Сформировать полный комплект (ДКП + Акт)", type="primary", use_container_width=True):
     doc = Document()
     
