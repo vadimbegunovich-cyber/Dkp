@@ -5,19 +5,22 @@ from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import io
 import json
-from google import genai
+import base64
+from openai import OpenAI
 from PIL import Image
 import datetime
 
 st.set_page_config(page_title="Автоматизация ДКП и Актов", page_icon="🚗", layout="wide")
 
-st.title("🚗 Генератор ДКП и Актов (AI-версия)")
-st.caption("Умное распознавание документов через нейросеть Gemini с поддержкой кредитных сделок")
+st.title("🚗 Генератор ДКП и Актов (DeepSeek / OpenAI API)")
+st.caption("Распознавание документов через универсальное API")
 
 # --- БОКОВАЯ ПАНЕЛЬ: ЗАГРУЗКА И AI ---
 st.sidebar.header("⚙️ Настройки и загрузка")
 
-api_key = st.sidebar.text_input("🔑 Вставьте API-ключ Gemini", type="password", help="Начинается на AIzaSy...")
+api_key = st.sidebar.text_input("🔑 Вставьте API-ключ", type="password", help="Ключ DeepSeek, OpenAI или OpenRouter")
+api_base_url = st.sidebar.text_input("🌐 Base URL (если нужно)", value="https://api.deepseek.com/v1", help="Для DeepSeek: https://api.deepseek.com/v1")
+model_name = st.sidebar.text_input("🧠 Имя модели", value="deepseek-chat", help="Внимание: стандартный deepseek-chat не видит картинки. Используйте vision-модели.")
 
 uploaded_files = st.sidebar.file_uploader(
     "Фото (Паспорт, СТС, ПТС)",
@@ -25,11 +28,19 @@ uploaded_files = st.sidebar.file_uploader(
     accept_multiple_files=True
 )
 
-# --- ИНИЦИАЛИЗАЦИЯ ДАННЫХ (ЖЕЛЕЗОБЕТОННОЕ СОХРАНЕНИЕ) ---
+# Функция для конвертации фото в Base64 для API
+def encode_image(uploaded_file):
+    img = Image.open(uploaded_file)
+    # Сжимаем, чтобы не перегружать API
+    img.thumbnail((1500, 1500))
+    buffer = io.BytesIO()
+    img.convert("RGB").save(buffer, format="JPEG", quality=85)
+    return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+# --- ИНИЦИАЛИЗАЦИЯ ДАННЫХ ---
 today_str = datetime.datetime.now().strftime("%d.%m.%Y")
 
 DEFAULT_DATA = {
-    # Стандартные данные
     "contract_num": "АК00000589",
     "contract_date": f"{today_str} г.",
     "city": "г. Калининград",
@@ -57,15 +68,17 @@ DEFAULT_DATA = {
     "car_color": "",
     "car_mileage": "",
     "car_pts": "",
+    "car_pts_date": "",
     "car_sts": "",
+    "car_sts_issuer": "",
+    "car_sts_dept": "",
+    "car_sts_date": "",
     "car_number": "",
     "car_year": "",
     "car_defects": "диагностика прилагается",
     "price_num": "1 500 000",
     "price_text": "Один миллион пятьсот тысяч рублей",
     "payment_details": "денежные средства перечислить в качестве частичной оплаты приобретаемого Продавцом нового автомобиля",
-    
-    # Кредит и залог (Переключатель)
     "is_credit_deal": False,
     "pledge_bank_full": "ПАО «Сбербанк» Россия, Москва, 117312, ул. Вавилова, д. 19",
     "pledge_contract": "14100686811",
@@ -102,17 +115,17 @@ for k, v in DEFAULT_DATA.items():
 
 # --- КНОПКА СКАНИРОВАНИЯ ---
 if st.sidebar.button("🤖 Умное распознавание", type="primary"):
-    if not api_key.startswith("AIzaSy"):
-        st.sidebar.error("⚠️ Введите правильный API-ключ (начинается на AIzaSy...)")
+    if not api_key:
+        st.sidebar.error("⚠️ Введите API-ключ!")
     elif not uploaded_files:
         st.sidebar.warning("⚠️ Загрузите фото документов.")
     else:
-        with st.spinner("Нейросеть читает документы... (занимает 5-15 сек)"):
+        with st.spinner("Нейросеть читает документы..."):
             try:
-                client = genai.Client(api_key=api_key.strip())
-                images = [Image.open(f) for f in uploaded_files]
+                # Настройка универсального клиента
+                client = OpenAI(api_key=api_key.strip(), base_url=api_base_url.strip())
                 
-                prompt = """
+                prompt_text = """
                 Твоя задача — извлечь данные из предоставленных фото (паспорт, СТС, ПТС) и вернуть их СТРОГО в формате JSON без разметки markdown.
                 Структура JSON:
                 {
@@ -123,7 +136,11 @@ if st.sidebar.button("🤖 Умное распознавание", type="primary
                   "car_vin": "VIN номер авто (17 символов)",
                   "car_year": "Год выпуска",
                   "car_pts": "Серия и номер ПТС",
+                  "car_pts_date": "Дата выдачи ПТС",
                   "car_sts": "Серия и номер СТС",
+                  "car_sts_issuer": "Кем выдан СТС",
+                  "car_sts_dept": "Код подразделения СТС (если есть)",
+                  "car_sts_date": "Дата выдачи СТС",
                   "car_number": "Государственный регистрационный знак авто",
                   "car_color": "Цвет авто",
                   "car_engine": "Модель и номер двигателя (если есть)"
@@ -131,12 +148,24 @@ if st.sidebar.button("🤖 Умное распознавание", type="primary
                 Если какого-то поля на фото нет, оставь пустую строку "".
                 """
                 
-                response = client.models.generate_content(
-                    model='gemini-2.0-flash',
-                    contents=[prompt, *images]
+                # Формируем запрос с текстом и картинками
+                content_list = [{"type": "text", "text": prompt_text}]
+                for file in uploaded_files:
+                    base64_image = encode_image(file)
+                    content_list.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                    })
+
+                response = client.chat.completions.create(
+                    model=model_name.strip(),
+                    messages=[{"role": "user", "content": content_list}],
+                    response_format={"type": "json_object"} if "deepseek" not in model_name.lower() else None # DeepSeek не всегда поддерживает JSON mode
                 )
                 
-                cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
+                # Очистка и парсинг ответа
+                raw_text = response.choices[0].message.content
+                cleaned_text = raw_text.replace("```json", "").replace("```", "").strip()
                 extracted_data = json.loads(cleaned_text)
                 
                 for key, val in extracted_data.items():
@@ -149,7 +178,7 @@ if st.sidebar.button("🤖 Умное распознавание", type="primary
                 st.sidebar.success("✅ Все данные успешно извлечены!")
                 st.rerun()
             except Exception as e:
-                st.sidebar.error(f"❌ Ошибка: {e}")
+                st.sidebar.error(f"❌ Ошибка API: {e}. Возможно, выбранная модель не поддерживает обработку изображений.")
 
 # --- ИНТЕРФЕЙС ВВОДА ДАННЫХ ---
 st.subheader("📋 Данные для ДКП и Акта")
@@ -167,9 +196,10 @@ with tab_deal:
     st.text_area("Особые условия оплаты (п. 2.2 для стандарта)", key="payment_details", height=80, help="Используется только если выключена галочка кредита на соседней вкладке.")
 
 with tab_credit:
-    st.checkbox("🔥 Автомобиль в залоге (Сложный расчет: трейд-ин + погашение)", key="is_credit_deal")
+    is_credit = st.checkbox("🔥 Автомобиль в залоге (Сложный расчет: трейд-ин + погашение)", value=st.session_state.get("is_credit_deal", False))
+    st.session_state["is_credit_deal"] = is_credit
     
-    if st.session_state.is_credit_deal:
+    if is_credit:
         st.markdown("##### 📌 Данные банка и залога (Пункт 1.2)")
         cr1, cr2 = st.columns(2)
         cr1.text_area("Банк (полный адрес)", key="pledge_bank_full", height=70)
@@ -249,14 +279,25 @@ with tab_car:
     c5.text_input("Гос. номер", key="car_number")
     c6.text_input("Пробег", key="car_mileage")
     
+    st.markdown("##### 📄 Данные ПТС")
     c7, c8 = st.columns(2)
-    c7.text_input("ПТС", key="car_pts")
-    c8.text_input("СТС", key="car_sts")
+    c7.text_input("ПТС (Серия и номер)", key="car_pts")
+    c8.text_input("Дата выдачи ПТС", key="car_pts_date")
     
-    c9, c10, c11 = st.columns(3)
-    c9.text_input("№ Двигателя", key="car_engine")
-    c10.text_input("№ Кузова", key="car_body")
-    c11.text_input("№ Рамы (Шасси)", key="car_frame")
+    st.markdown("##### 📄 Данные СТС")
+    c9, c10 = st.columns(2)
+    c9.text_input("СТС (Серия и номер)", key="car_sts")
+    c10.text_input("Дата выдачи СТС", key="car_sts_date")
+    
+    c11, c12 = st.columns([2, 1])
+    c11.text_input("Кем выдан СТС", key="car_sts_issuer")
+    c12.text_input("Код подразделения", key="car_sts_dept")
+    
+    st.markdown("##### ⚙️ Агрегаты")
+    c13, c14, c15 = st.columns(3)
+    c13.text_input("№ Двигателя", key="car_engine")
+    c14.text_input("№ Кузова", key="car_body")
+    c15.text_input("№ Рамы (Шасси)", key="car_frame")
     st.text_input("Дефекты (недостатки)", key="car_defects")
 
 
@@ -268,7 +309,6 @@ def create_word_doc(data):
     font.name = 'Times New Roman'
     font.size = Pt(10)
     
-    # Заголовок ДКП
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.add_run(f"ДОГОВОР КУПЛИ-ПРОДАЖИ АВТОМОБИЛЯ № {data['contract_num']}").bold = True
@@ -285,6 +325,15 @@ def create_word_doc(data):
     
     p = doc.add_paragraph()
     p.add_run("1. Предмет Договора").bold = True
+    
+    pts_string = f"{data['car_pts']} от {data['car_pts_date']}" if data.get('car_pts_date') else f"{data['car_pts']}"
+    
+    sts_string = f"{data['car_sts']}"
+    if data.get('car_sts_issuer') or data.get('car_sts_date'):
+        sts_string += f", выдано {data['car_sts_issuer']} {data['car_sts_date']}"
+    if data.get('car_sts_dept'):
+        sts_string += f" код подр. {data['car_sts_dept']}"
+        
     doc.add_paragraph(
         "1.1. Продавец обязуется передать в собственность Покупателя, а Покупатель обязуется принять и оплатить следующий "
         "бывший в эксплуатации автомобиль (далее по тексту - «Автомобиль»):\n"
@@ -295,14 +344,13 @@ def create_word_doc(data):
         f"Номер рамы (шасси): {data['car_frame']};\n"
         f"Цвет: {data['car_color']};\n"
         f"Пробег (по показаниям одометра): {data['car_mileage']};\n"
-        f"ПТС: {data['car_pts']};\n"
-        f"Свидетельство о регистрации: {data['car_sts']};\n"
+        f"ПТС: {pts_string};\n"
+        f"Свидетельство о регистрации: {sts_string};\n"
         f"Государственный регистрационный номер: {data['car_number']};\n"
         f"Год выпуска: {data['car_year']};\n"
         f"Дефекты (недостатки): {data['car_defects']}."
     )
     
-    # --- ЛОГИКА 1.2 ЗАЛОГ vs СТАНДАРТ ---
     if data['is_credit_deal']:
         doc.add_paragraph(f"1.2. Продаваемый по настоящему договору автомобиль находится в залоге у {data['pledge_bank_full']} по кредитному договору №{data['pledge_contract']} от {data['pledge_date']}. Сумма задолженности Продавца перед {data['pledge_bank_short']} {data['pledge_debt_num']} рублей ({data['pledge_debt_text']}) на момент полного досрочного погашения кредита {data['pledge_repay_date']}.")
     else:
@@ -316,7 +364,6 @@ def create_word_doc(data):
     p.add_run("2. Цена товара и порядок оплаты").bold = True
     doc.add_paragraph(f"2.1. Общая сумма Договора (стоимость Автомобиля) составляет {data['price_num']} рублей ({data['price_text']}), НДС не предусмотрен.")
     
-    # --- ЛОГИКА 2.2 СЛОЖНЫЙ РАСЧЕТ vs СТАНДАРТ ---
     if data['is_credit_deal']:
         doc.add_paragraph(f"2.2. Расчет по договору осуществляется следующим образом:\n- денежные средства в размере {data['tradein_amount_num']} ({data['tradein_amount_text']}), за автомобиль перечислить в качестве частичной оплаты приобретаемого Продавцом ({data['seller_fio']}) у {data['buyer_company']} нового автомобиля {data['new_car_name']} VIN {data['new_car_vin']} по договору №{data['new_car_contract']} от {data['new_car_date']} по заявлению;\n- частичная стоимость автомобиля в размере {data['credit_pay_num']} рублей ({data['credit_pay_text']}) перечисляются не позднее {data['credit_pay_date']} на счет:\nНомер счёта: {data['seller_acc_num']}\nБанк получателя: {data['seller_bank_name']}\nБИК: {data['seller_bik']}\nКорр. счёт: {data['seller_ks']}\nИНН: {data['seller_bank_inn']}\nКПП: {data['seller_bank_kpp']}\nОКПО: {data['seller_bank_okpo']}\nОГРН: {data['seller_bank_ogrn']}\nSWIFT-код: {data['seller_swift']}\nПочтовый адрес банка: {data['seller_bank_address1']}\nПочтовый адрес доп.офиса: {data['seller_bank_address2']}.")
     else:
@@ -390,8 +437,8 @@ def create_word_doc(data):
         f"Номер рамы (шасси): {data['car_frame']};\n"
         f"Цвет: {data['car_color']};\n"
         f"Пробег: {data['car_mileage']};\n"
-        f"ПТС: {data['car_pts']};\n"
-        f"Свидетельство о регистрации: {data['car_sts']};\n"
+        f"ПТС: {pts_string};\n"
+        f"Свидетельство о регистрации: {sts_string};\n"
         f"Государственный регистрационный номер: {data['car_number']};\n"
         f"Год выпуска: {data['car_year']};\n"
         f"Дефекты (недостатки): {data['car_defects']}.\n"
