@@ -1,4 +1,5 @@
 streamlit
 python-docx
-google-genai
+openai
 pillow
+
